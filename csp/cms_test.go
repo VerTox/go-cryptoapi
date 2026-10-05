@@ -243,3 +243,46 @@ func BenchmarkVerifyDetachedCMSParallel(b *testing.B) {
 		}
 	})
 }
+
+func TestVerifyDetachedCMS_WithChainBuilder(t *testing.T) {
+	data := loadFixture(t, "testdata/good.xml")
+	sig := loadFixture(t, "testdata/good.xml.sig")
+
+	t.Run("builder is called per signer and its status decides", func(t *testing.T) {
+		var calls int
+		builder := func(cert Cert, extra *CertStore, flags uint32) (ChainStatus, error) {
+			calls++
+			if cert.IsZero() {
+				t.Error("builder got a zero certificate")
+			}
+			if flags != RevocationCheckChainExcludeRoot {
+				t.Errorf("flags = %#x, want default revocation mode", flags)
+			}
+			return ChainStatus(TrustIsRevoked), nil
+		}
+
+		res, err := VerifyDetachedCMS(data, sig, WithChainBuilder(builder))
+		if err != nil {
+			t.Fatalf("VerifyDetachedCMS: %v", err)
+		}
+		if calls != len(res.Signers) {
+			t.Errorf("builder calls = %d, want %d", calls, len(res.Signers))
+		}
+		if res.OK() {
+			t.Error("OK() = true, want false: builder reported a revoked chain")
+		}
+	})
+
+	t.Run("builder error lands in ChainErr", func(t *testing.T) {
+		sentinel := errors.New("queue timeout")
+		res, err := VerifyDetachedCMS(data, sig, WithChainBuilder(func(Cert, *CertStore, uint32) (ChainStatus, error) {
+			return 0, sentinel
+		}))
+		if err != nil {
+			t.Fatalf("VerifyDetachedCMS: %v", err)
+		}
+		if !errors.Is(res.Signers[0].ChainErr, sentinel) {
+			t.Errorf("ChainErr = %v, want %v", res.Signers[0].ChainErr, sentinel)
+		}
+	})
+}

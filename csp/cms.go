@@ -26,9 +26,22 @@ var (
 // CMSVerifyOption configures VerifyDetachedCMS.
 type CMSVerifyOption func(*cmsVerifyConfig)
 
+// ChainBuilder builds and evaluates the signer's certificate chain. It has the
+// same contract as BuildChain: a non-nil error means the chain could not be
+// evaluated, a non-zero status means it was evaluated and found wanting.
+type ChainBuilder func(cert Cert, extra *CertStore, flags uint32) (ChainStatus, error)
+
 type cmsVerifyConfig struct {
 	revocationFlags uint32
 	collectNames    bool
+	buildChain      ChainBuilder
+}
+
+// WithChainBuilder replaces chain evaluation for every signer. The builder runs
+// in Go, so it may block — e.g. to wait for a concurrency slot or a cached
+// result. The default is BuildChain.
+func WithChainBuilder(b ChainBuilder) CMSVerifyOption {
+	return func(c *cmsVerifyConfig) { c.buildChain = b }
 }
 
 // WithRevocationMode selects how revocation is checked while evaluating the
@@ -150,9 +163,12 @@ func VerifyDetachedCMS(data, sig []byte, opts ...CMSVerifyOption) (*CMSVerificat
 		return nil, ErrEmptyInput
 	}
 
-	cfg := cmsVerifyConfig{revocationFlags: RevocationCheckChainExcludeRoot}
+	cfg := cmsVerifyConfig{revocationFlags: RevocationCheckChainExcludeRoot, buildChain: BuildChain}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.buildChain == nil {
+		cfg.buildChain = BuildChain
 	}
 
 	msg, err := OpenToVerify(sig)
@@ -226,7 +242,7 @@ func verifySigner(msg *Msg, store CertStore, i int, cfg cmsVerifyConfig) SignerV
 		return out
 	}
 
-	out.ChainStatus, out.ChainErr = BuildChain(cert, &store, cfg.revocationFlags)
+	out.ChainStatus, out.ChainErr = cfg.buildChain(cert, &store, cfg.revocationFlags)
 
 	return out
 }
